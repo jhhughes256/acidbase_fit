@@ -1,0 +1,263 @@
+---
+title: "Estimation of Rate Constant Parameters for Acid/Base Attack of Aspirin"
+author: "Jim Hughes"
+date: "15 April 2019"
+output:
+  word_document: default
+---
+
+_Note: This document as well as all code in relation to this document can be found
+at https://github.com/jhhughes256/acidbase_fit _
+
+### Aim
+The aim of this document is to provide an example of estimating rate constant
+parameters for the acid/base attack of a molecule. In this document the example
+is aspirin.
+
+### Software
+Throughout this document, the R programming software for statistical analysis
+will be used. This software is free and open source and is the gold standard
+for statistical analysis. Here we will fit a non-linear model to rate constant
+and pH data.
+
+R lets you define objects, which contain either single numbers, strings of 
+numbers, words, lists or tables of data. These can then be used with functions, 
+a set of actions that will be performed on an object to give an output.
+
+For example the statement `min(x)`, uses the `min` function on `x` an object in
+the environment. The `min` function finds the minimum value, so for a string
+of numbers from 0 to 20, this function will return a value of 0.
+
+If further understanding is required, please refer to tutorials online.
+
+### Acid/Base Attack Equation
+First the reactions taking place should be considered. For aspirin, there are 
+six potential reactions. Acid, base and water attack for the unionised form
+of aspirin and acid, base and water attack for the ionisied form. However,
+only four reactions at most can be observed.
+
+To determine how many reactions can be observed, the log of the rate constant
+`log k` is plotted against `pH`. To do this in R:
+
+```{r rawplot}
+# First load a graphical package
+  library(ggplot2)  # graphical package
+
+# Set the ggplot2 theme to your preference
+  theme_bw2 <- theme_set(theme_bw(base_size = 14))
+  theme_update(plot.title = element_text(hjust = 0.5))
+  
+# Read in the data to be plotted
+# This data is the observed data consisting of matched logk and pH values
+  aspirin_data <- read.csv("D:/2019 PostDoc/Des/aspirin_hydrolysis.csv")
+  
+# Then plot said data
+# The plot is built up over multiple lines, adding elements to the overall plot
+  p <- NULL
+  p <- ggplot(data = aspirin_data)
+  p <- p + geom_point(aes(x = pH, y = logk), shape = 1, colour = "blue")
+  p <- p + labs(x = "pH", y = "log k (min^-1)")
+  p
+```
+
+From this we can see four distinct reactions. The acid and water catalysed
+degradation of unionised aspirin, and the base and water catalysed degradation
+of ionisied aspirin. Therefore the equation for the rate constant is:
+
+$$
+k = k_H[H^+]\frac{[H^+]}{[H^++K_a]} + k_{H_2O}\frac{[H^+]}{[H^++K_a]} +
+    k'_{H_2O}\frac{[H^+]}{[H^++K_a]} + k'_{OH}\frac{K_w}{[H^+]}\frac{K_a}{[H^++K_a]}
+$$
+
+The equation has four rate constants to be estimated: $k_H$, $k_{H_2O}$, 
+$k'_{H_2O}$ and $k'_{OH}$.
+
+### Estimating Rate Constants
+To estimate the rate constants we will use R to define a function, which 
+calculates the total rate constant $k$ and is dependent on what estimated
+rate constants are provided as input.
+
+```{r pred}
+# First the aspirin data would be read in, however this is already done, so it
+# is commented out
+  # aspirin_data <- read.csv("D:/2019 PostDoc/Des/aspirin_hydrolysis.csv")
+  
+# Now we define our function, which is called k_pred
+# It has par and pH as inputs
+# par is a string of numbers describing the estimated rate constants
+# pH is a string of numbers describing the pH that we wish to calculate k at
+  k_pred <- function(par, pH) {
+  # Define objects with fixed values
+  # These include the values for Kw and Ka
+    Kw <- 1E-14
+    pKa <- 3.57
+    Ka <- 10^-pKa
+    
+  # Determine values dependent on pH
+    H <- 10^-pH
+    fAH <- H/(H+Ka)
+    fA <- Ka/(H+Ka)
+    
+  # Define parameter values to be used in the equations
+  # Square brackets are used to extract the 1st, 2nd, 3rd and 4th number from par
+    k1H <- par[1]
+    k1H20 <- par[2]
+    k2H20 <- par[3]
+    k2OH <- par[4]
+    
+  # Determine each part of the rate constant equation and put them in a table
+    data.frame(
+      pH = pH,
+      k1H = k1H*H*fAH,  # acid-catalysed unionised
+      k1H2O = k1H20*fAH,  # water-catalysed unionised
+      k2H2O = k2H20*fA,  # water-catalysed ionised
+      k2OH = k2OH*(Kw/H)*fA,  # base-catalysed ionised
+  # Finally determine the total rate constant
+      k = k1H*H*fAH + k1H20*fAH + k2H20*fA + k2OH*(Kw/H)*fA
+    )
+  }
+```
+
+Using the new function `k_pred` we can now calculate $k$ given we have values
+for $k_H$, $k_{H_2O}$, $k'_{H_2O}$ and $k'_{OH}$ as an object and a string of
+values for pH that we wish to predict $k$ at.
+
+Next we must create a function that determines how accurate a given set of
+rate constants are at determining `k`. This is done by calculating an objective
+function, which is a value describing the likelihood that the given rate
+constants are correct.
+
+```{r estim}
+# This function as two inputs: par and data
+# par is the same as the input seen in the k_pred function
+# It is a string of parameters describing the rate constants to be estimated
+# It also includes an additional parameter, which is the error parameter
+# This is located at the end of the string
+# data is the observed data consisting of matched logk and pH values
+  estimate_fn <- function(par, data) {
+  # Define independent variable, named x for the x axis on a plot
+    x <- aspirin_data$pH
+    
+  # Define dependent variable, named y for the y axis
+  # the log k is converted to k: k = 10^{log k}
+    y <- 10^aspirin_data$logk  
+    
+  # Define predicted dependent variable
+  # This prediction is based on the values of par
+  # We use the k_pred function we defined to calculate this predicted value for k
+  # $k is added to the end of the function as we only want the k term, as 
+  #   k_pred also provides a number of other values
+  # It is named yhat, as the hat symbol denotes a prediction
+    yhat <- k_pred(par, x)$k
+    
+  # Test (log) likelihood that prediction is correct
+  # This function `dnorm` is a density function and determines how normally
+  #   distributed the observed values are around the predicted values.
+  # The normal distribution has a mean of the predicted value, and a standard
+  #   deviation dependent on the value of the error parameter multiplied by
+  #   the predicted value. This is known as proportional error.
+    loglik <- dnorm(y, mean = yhat, sd = par[5]*yhat, log = T)
+    
+  # Return objective function value to be minimised
+    return(-1*sum(loglik))
+  }
+```
+
+So now when use our new `estimate_fn` function, we provide it with `par`, which
+is a string of numbers, with the initial numbers being the rate constants that
+wish to be estimated (in this case: $k_H$, $k_{H_2O}$, $k'_{H_2O}$ and 
+$k'_{OH}$). The final number is the proportional error term (in this case: 
+`par[5]`) and is used when determining the objective function.
+
+The last step of estimation is to use a "hill climbing" algorithm to find the
+best set of rate constants that describe our observed data. When given a set
+of initial estimates for a set of parameters, this algorithm will run a function
+repeatedly using those parameters, changing the values slightly each time it 
+runs the function. It aims to climb to the highest point, that is, determine
+the objective function value that is the best fit for the observed data.
+
+```{r optim}
+# First we define our rate constants (in days^-1)
+# These are found from literature
+  k_constants <- c(2.5, 0.01, 0.1, 5000)
+
+# Now we define our initial parameters
+# the rate constants are converted to min^-1
+# also an initial estimate for error is defined, and added to the end of the 
+# our parameters
+  err <- 0.1
+  init_par <- c(k_constants/24/60, err)
+  init_par
+
+# Then the hill-climbing algorithm function `optim` is used to determine our
+# optimised rate constants, which will be stored in `k_opt`
+# We must provide optim with:
+# - the initial parameter values (par = init_par)
+# - the function that calculates the objective function value (fn = estim_fn)
+# - the preferred hill-climbing algorithm (method = "L-BFGS-B")
+  k_opt <- optim(
+    par = init_par, 
+    fn = estimate_fn, 
+    method = "L-BFGS-B",
+    lower = c(init_par[1:4]*0.8, 0.001), 
+    upper = c(init_par[1:4]*1.2, 1)
+  )
+  # L-BFGS-B is used as you can give an lower and upper bounds to the search
+  #   for the optimal parameter values. lower = ... and upper = ... are provided
+  #   with separate lower and upper bounds for each parameter.
+  # Here we are using 80% of the initial estimate for the rate constants as the
+  #   lower bound, and 120% as the upper bound.
+  # The error parameter is given a lower bound of 0.001 and an upper bound of 1.
+  #   Therefore an lower bound of 0.1% error and an upper bound of 100% error.
+  
+# Finall we need to extract the optimised parameters from our k_opt object
+# We use the `head` function to get the first values, minus 1 value from the end
+#   as we are not interested in the error parameter
+# In doing so we convert them from min^-1 back to days^-1
+  opt_par <- head(k_opt$par, -1)*60*24
+  k_constants
+  opt_par
+```
+
+Finally we can re-calculate the total rate constant $k$ with our optimised 
+rate constants ($k_H$, $k_{H_2O}$, $k'_{H_2O}$ and $k'_{OH}$) and plot them
+against our observed data.
+
+``` {r plot}
+# Using our k_pred function we create our predicted data
+# For the pH we provide k_pred with a sequence of numbers from 0 to 14, with
+#   the gaps between values being 0.1 (e.g. 0, 0.1, 0.2, ... 13.9, 14)
+  pred_data <- k_pred(par = opt_par, pH = seq(0, 14, by = 0.1))
+
+# None of these values are in the log domain, so we must convert them all
+  pred_data$logk <- log10(pred_data$k)
+  pred_data$logk1H <- log10(pred_data$k1H)
+  pred_data$logk1H2O <- log10(pred_data$k1H2O)
+  pred_data$logk2H2O <- log10(pred_data$k2H2O)
+  pred_data$logk2OH <- log10(pred_data$k2OH)
+  
+# We also need to convert the observed data to be in the same units as our
+#   predicted data (days^-1)
+  aspirin_data$k_min <- 10^aspirin_data$logk
+  aspirin_data$k_day <- 60*24*aspirin_data$k_min
+  aspirin_data$logk_day <- log10(aspirin_data$k_day)
+  
+# Create plot
+# The observed data is plotted as points
+# The predicted rate constant is plotted as a solid line
+# Each of the components of the rate constant is plotted as a dashed line
+# coord_cartesian sets the limits for each axis
+  p <- NULL
+  p <- ggplot(data = pred_data)
+  p <- p + geom_point(aes(x = pH, y = logk_day), data = aspirin_data, 
+    shape = 1, colour = "blue")
+  p <- p + geom_line(aes(x = pH, y = logk), size = 1)
+  p <- p + geom_line(aes(x = pH, y = logk1H), linetype = "dashed")
+  p <- p + geom_line(aes(x = pH, y = logk1H2O), linetype = "dashed")
+  p <- p + geom_line(aes(x = pH, y = logk2H2O), linetype = "dashed")
+  p <- p + geom_line(aes(x = pH, y = logk2OH), linetype = "dashed")
+  p <- p + ylab("log k (d^-1)")
+  p <- p + coord_cartesian(xlim = c(0.5, 11.5), ylim = c(-4, 2.5))
+  p
+
+```
